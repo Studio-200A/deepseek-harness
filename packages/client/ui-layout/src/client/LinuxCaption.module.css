@@ -9,9 +9,13 @@
   display: flex;
   align-items: stretch;
   justify-content: flex-end;
-  -webkit-app-region: drag;
   user-select: none;
 }
+
+/* No drag declaration here: app-regions compose from geometry in document
+   order, and this row follows the sidebar, so a drag here would cover the
+   sidebar header's no-drag controls. The frame's caption band (AppFrame
+   .frame::before) already drags the whole strip and precedes them. */
 
 /* Fullscreen keeps the clearance like the Windows overlay but hides the controls. */
 :global(html[data-fullscreen]) .caption {

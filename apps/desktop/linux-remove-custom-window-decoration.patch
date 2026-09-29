@@ -364,10 +364,10 @@ index e03a86b..0000000
 -}
 diff --git a/packages/client/ui-layout/src/client/LinuxCaption.module.css b/packages/client/ui-layout/src/client/LinuxCaption.module.css
 deleted file mode 100644
-index 690becc..0000000
+index f2264c3..0000000
 --- a/packages/client/ui-layout/src/client/LinuxCaption.module.css
 +++ /dev/null
-@@ -1,68 +0,0 @@
+@@ -1,72 +0,0 @@
 -/* Linux self-drawn caption: a drag row above the reserved caption clearance
 -   with a right-aligned Windows-style control group. */
 -
@@ -379,9 +379,13 @@ index 690becc..0000000
 -  display: flex;
 -  align-items: stretch;
 -  justify-content: flex-end;
--  -webkit-app-region: drag;
 -  user-select: none;
 -}
+-
+-/* No drag declaration here: app-regions compose from geometry in document
+-   order, and this row follows the sidebar, so a drag here would cover the
+-   sidebar header's no-drag controls. The frame's caption band (AppFrame
+-   .frame::before) already drags the whole strip and precedes them. */
 -
 -/* Fullscreen keeps the clearance like the Windows overlay but hides the controls. */
 -:global(html[data-fullscreen]) .caption {
@@ -438,7 +442,7 @@ index 690becc..0000000
 -}
 diff --git a/packages/client/ui-layout/tests/linux-caption.client.spec.tsx b/packages/client/ui-layout/tests/linux-caption.client.spec.tsx
 deleted file mode 100644
-index f8f9794..0000000
+index 04219bd..0000000
 --- a/packages/client/ui-layout/tests/linux-caption.client.spec.tsx
 +++ /dev/null
 @@ -1,103 +0,0 @@
@@ -460,7 +464,7 @@ index f8f9794..0000000
 -
 -function captionFixture(initialMaximized = false): ControlsFixture {
 -  const calls: string[] = []
--  let maximized = initialMaximized
+-  const maximized = initialMaximized
 -  const listeners = new Set<(maximized: boolean) => void>()
 -  return {
 -    calls,
@@ -485,10 +489,10 @@ index f8f9794..0000000
 -describe('LinuxCaption', () => {
 -  it('renders nothing without the shell marker or controls', () => {
 -    expect(linuxCaptionMounted()).toBe(false)
--    const plain = render(<LinuxCaption t={(key) => key} />)
+-    const plain = render(<LinuxCaption t={key => key} />)
 -    expect(plain.container.firstElementChild).toBeNull()
 -    document.documentElement.dataset.linuxWindowControls = ''
--    const marked = render(<LinuxCaption t={(key) => key} />)
+-    const marked = render(<LinuxCaption t={key => key} />)
 -    // The marker alone does not produce controls; only the desktop preload supplies them.
 -    expect(marked.container.firstElementChild).toBeNull()
 -  })
@@ -497,7 +501,7 @@ index f8f9794..0000000
 -    document.documentElement.dataset.linuxWindowControls = ''
 -    const { calls, controls } = captionFixture()
 -    ;(window as { dshDesktop?: unknown }).dshDesktop = { windowControls: controls }
--    const mounted = render(<LinuxCaption t={(key) => key} />)
+-    const mounted = render(<LinuxCaption t={key => key} />)
 -    const buttons = mounted.getAllByRole('button')
 -    expect(buttons.map(button => button.getAttribute('aria-label'))).toEqual(['window.minimize', 'window.maximize', 'close'])
 -    buttons[0]!.click()
@@ -519,7 +523,7 @@ index f8f9794..0000000
 -      ...controls,
 -      onMaximizedChanged: (listener: (maximized: boolean) => void) => { notify = listener; return () => { notify = undefined } },
 -    } }
--    const mounted = render(<LinuxCaption t={(key) => key} />)
+-    const mounted = render(<LinuxCaption t={key => key} />)
 -    await act(async () => { await Promise.resolve() })
 -    expect(markedButtons(mounted.container)[1]!.getAttribute('aria-label')).toBe('window.restore')
 -    act(() => { notify?.(false) })
@@ -534,7 +538,7 @@ index f8f9794..0000000
 -    document.documentElement.dataset.linuxWindowControls = ''
 -    const { calls, controls } = captionFixture()
 -    ;(window as { dshDesktop?: unknown }).dshDesktop = { windowControls: controls }
--    const mounted = render(<LinuxCaption t={(key) => key} />)
+-    const mounted = render(<LinuxCaption t={key => key} />)
 -    mounted.container.firstElementChild!.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, detail: 2 }))
 -    expect(calls).toEqual(['toggle-maximize'])
 -    mounted.unmount()
