@@ -15,13 +15,16 @@ import {
 import { desktopTargetBuildPaths } from './desktop-build-paths.mjs'
 import { validateDesktopBuildVersion } from './desktop-build-version.mjs'
 
+/** Release targets the COS upload pipeline serves; local Linux builds publish no update artifacts. */
+export type DesktopUploadTargetName = Extract<DesktopPackageTargetName, 'mac-arm64' | 'mac-x64' | 'win-x64'>
+
 const APP_ROOT = resolve(import.meta.dirname, '..')
 const REPOSITORY_ROOT = resolve(APP_ROOT, '..', '..')
 const TARGETS = {
   'mac-arm64': { platform: 'darwin', arch: 'arm64', os: 'mac' },
   'mac-x64': { platform: 'darwin', arch: 'x64', os: 'mac' },
   'win-x64': { platform: 'win32', arch: 'x64', os: 'win' },
-} as const satisfies Record<DesktopPackageTargetName, {
+} as const satisfies Record<DesktopUploadTargetName, {
   readonly platform: NodeJS.Platform
   readonly arch: string
   readonly os: string
@@ -41,7 +44,7 @@ export interface DesktopUploadArtifact {
 /** A fully validated upload operation with channel metadata ordered last. */
 export interface DesktopUploadPlan {
   readonly environment: 'test' | 'production'
-  readonly target: DesktopPackageTargetName
+  readonly target: DesktopUploadTargetName
   readonly version: string
   readonly publicUrl: string
   readonly bucket: string
@@ -174,7 +177,7 @@ function uploadArtifact(
  * @returns An upload plan whose mutable channel metadata is the final entry.
  */
 export async function createDesktopUploadPlan(
-  targetName: DesktopPackageTargetName,
+  targetName: DesktopUploadTargetName,
   options: DesktopUploadPlanOptions = {},
 ): Promise<DesktopUploadPlan> {
   const target = TARGETS[targetName]

@@ -2,6 +2,7 @@ CLAUDE.local.md
 .env
 apps/desktop/.env.windows
 apps/desktop/.env.macos
+apps/desktop/env.linux
 apps/desktop/*.p12
 node_modules/
 lib/
@@ -46,3 +47,5 @@ worktrees/
 .agents/worktrees/
 .typert-*/
 native/system/test/bin/
+# electron-builder's default output when a run misses the target directories.output config.
+apps/desktop/dist/

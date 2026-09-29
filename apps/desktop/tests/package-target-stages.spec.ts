@@ -130,6 +130,16 @@ it('checks macOS directory packages without writing a release record', async () 
   expect(writeFileSync).not.toHaveBeenCalled()
 })
 
+it('assembles the Linux AppImage without signing, an update feed or a release record', async () => {
+  const { run, stages } = supervisor()
+  await packageTarget(parseDesktopPackageInvocation(['linux-x64'], 'linux', 'x64'), environment, run)
+  expect(stages[0]).toBe('run build:official')
+  expect(stages).toContain('exec electron-builder --config electron-builder.config.mjs --linux --x64 --publish never')
+  expect(stages.at(-1)).toBe('exec tsx scripts/smoke-packaged-runtime.ts')
+  expect(withWindowsSigningStage).not.toHaveBeenCalled()
+  expect(writeFileSync).not.toHaveBeenCalled()
+})
+
 it.each([undefined, '2'])('passes macOS pack concurrency %s only to workspace packing and download routing only to download stages', async (concurrency) => {
   const { run } = supervisor()
   await packageTarget(parseDesktopPackageInvocation(['mac-arm64', '--prepare-only'], 'darwin', 'arm64'), {
