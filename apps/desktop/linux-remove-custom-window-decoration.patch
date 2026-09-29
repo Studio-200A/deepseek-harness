@@ -1,0 +1,547 @@
+diff --git a/apps/desktop/src/ipc.ts b/apps/desktop/src/ipc.ts
+index dc836ad..fc19021 100644
+--- a/apps/desktop/src/ipc.ts
++++ b/apps/desktop/src/ipc.ts
+@@ -29,8 +29,6 @@ export const DESKTOP_IPC = {
+   updatesPresentation: 'dsh-desktop:updates-presentation',
+   nativeThemeSet: 'dsh-desktop:native-theme-set',
+   windowFullscreen: 'dsh-desktop:window-fullscreen',
+-  windowControl: 'dsh-desktop:window-control',
+-  windowMaximized: 'dsh-desktop:window-maximized',
+   windowsAppearance: 'dsh-desktop:windows-appearance',
+   windowsMenu: 'dsh-desktop:windows-menu',
+ } as const
+@@ -70,28 +68,12 @@ export interface DesktopUpdatePresentation {
+   readonly failure?: DesktopUpdateFailureKind
+ }
+ 
+-/** Linux self-drawn caption operations; other platforms keep native or overlay window controls. */
+-export interface DesktopWindowControlsApi {
+-  /** Minimize the owning window. */
+-  minimize(): void
+-  /** Maximize the owning window, or restore it when already maximized. */
+-  toggleMaximize(): void
+-  /** Close the owning window through the shell's ordinary close path. */
+-  close(): void
+-  /** Whether the owning window is currently maximized. */
+-  maximized(): Promise<boolean>
+-  /** Subscribe to maximized transitions of the owning window. */
+-  onMaximizedChanged(listener: (maximized: boolean) => void): () => void
+-}
+-
+ /** Product documents cannot supply update versions, package URLs, or installation authorization. */
+ export interface DshDesktopProductApi {
+   readonly protocolVersion: 1
+   readonly browser: DesktopBrowserBridge
+   readonly keyboard: DesktopKeyboardApi
+   readonly shortcuts: DesktopShortcutsApi
+-  /** Present only when the shell draws window controls itself (Linux). */
+-  readonly windowControls?: DesktopWindowControlsApi
+   /**
+    * Local machine description for the feedback questionnaire.
+    * @returns `name=value` fields separated by `; `, with no hostname, user name, or serial number.
+diff --git a/apps/desktop/src/main.ts b/apps/desktop/src/main.ts
+index ac3ca2a..53ca45d 100644
+--- a/apps/desktop/src/main.ts
++++ b/apps/desktop/src/main.ts
+@@ -228,8 +228,6 @@ function createWindow(preload: string, show = false, primary = false): BrowserWi
+       titleBarOverlay: { height: WINDOWS_TITLEBAR_HEIGHT, color: chromeFallbackFill(),
+         symbolColor: nativeTheme.shouldUseDarkColors ? '#f9fafb' : '#0f1115' },
+     } : {}),
+-    // Linux draws its caption and controls in the application document; the frameless window keeps native resizing.
+-    ...(process.platform === 'linux' && primary ? { titleBarStyle: 'hidden' as const } : {}),
+     // hiddenInset places traffic lights inside the sidebar; sidebar vibrancy
+     // needs a transparent window background to show through the page.
+     ...(process.platform === 'darwin' ? {
+@@ -255,9 +253,8 @@ function createWindow(preload: string, show = false, primary = false): BrowserWi
+     if (['http:', 'https:'].includes(new URL(url).protocol)) void shell.openExternal(url)
+     return { action: 'deny' }
+   })
+-  if (process.platform !== 'darwin') {
+-    // Fullscreen hides window controls on every non-macOS platform: Windows drops its overlay, Linux
+-    // its self-drawn caption, so CSS on both needs the transition and the post-load state.
++  if (process.platform === 'darwin' || process.platform === 'win32') {
++    // Fullscreen hides native window controls; overlays drop their caption clearance.
+     const sendFullscreen = (): void => {
+       if (!window.isDestroyed()) window.webContents.send(DESKTOP_IPC.windowFullscreen, window.isFullScreen())
+     }
+@@ -765,18 +762,6 @@ async function main(): Promise<void> {
+     assertProductSender(event)
+     return readDeviceInfo()
+   })
+-  ipcMain.handle(DESKTOP_IPC.windowControl, (event, action: unknown) => {
+-    assertProductSender(event)
+-    const window = mainWindow
+-    if (window === undefined || window.isDestroyed()) throw new Error('dsh desktop: no window owns this window control')
+-    // Linux self-drawn caption commands; every action routes through the ordinary window path.
+-    if (action === 'minimize') window.minimize()
+-    else if (action === 'toggle-maximize') {
+-      if (window.isMaximized()) window.unmaximize()
+-      else window.maximize()
+-    } else if (action === 'close') window.close()
+-    else throw new Error(`dsh desktop: unknown window control ${String(action)}`)
+-  })
+   ipcMain.handle(DESKTOP_IPC.onboardingApiKey, async (event) => {
+     assertProductSender(event)
+     return (await readWelcomeState()).hasApiKey
+@@ -1071,22 +1056,11 @@ async function main(): Promise<void> {
+     browserGuests.bind(window, (guest, name) => shortcuts.attachGuest(window, guest, name))
+     shortcuts.attach(window)
+     window.on('focus', automaticCheck)
+-    // The Linux self-drawn caption mirrors the fullscreen state feed: it needs the maximized
+-    // state on every transition and after each load to select its maximize or restore icon.
+-    const sendMaximized = (): void => {
+-      if (!window.isDestroyed()) window.webContents.send(DESKTOP_IPC.windowMaximized, window.isMaximized())
+-    }
+-    window.on('maximize', sendMaximized)
+-    window.on('unmaximize', sendMaximized)
+-    window.webContents.on('did-finish-load', sendMaximized)
+     // Closing hides: the page and the Host keep running, and the next show resumes the same document.
+     window.on('close', (event) => {
+       if (quitting || shellInstallerOwnsQuit || sessionEnding) return
+       event.preventDefault()
+       if (updateDialog.isOpen) { updateDialog.focus(); return }
+-      // Linux has no tray or Dock icon to bring a hidden window back, so closing requests the
+-      // ordinary confirmed quit instead of hiding into an unreachable background.
+-      if (process.platform === 'linux') { app.quit(); return }
+       const hide = (): void => {
+         if (!quitting && !shellInstallerOwnsQuit && !sessionEnding && !window.isDestroyed()) hideMainWindow(window)
+       }
+diff --git a/apps/desktop/src/preload-platform.ts b/apps/desktop/src/preload-platform.ts
+index 1835120..1e197b0 100644
+--- a/apps/desktop/src/preload-platform.ts
++++ b/apps/desktop/src/preload-platform.ts
+@@ -17,13 +17,13 @@ export function markDocumentPlatform(): void {
+ }
+ 
+ /**
+- * Mirrors the window's fullscreen state onto `<html data-fullscreen>` so CSS drops
+- * the clearance for hidden window controls. The main process sends the state
+- * on every transition and after each load on every non-macOS platform.
++ * Mirrors the window's macOS and Windows fullscreen state onto `<html data-fullscreen>` so
++ * CSS drops the clearance for hidden native window controls. The main
++ * process sends the state on every transition and after each load.
+  */
+ export function syncWindowFullscreen(): void {
+-  // The main process sends this IPC only on non-macOS platforms; other hosts need no listener.
+-  if (process.platform === 'darwin') return
++  // The main process sends this IPC only on macOS and Windows; other platforms need no listener.
++  if (process.platform !== 'darwin' && process.platform !== 'win32') return
+   ipcRenderer.on(DESKTOP_IPC.windowFullscreen, (_event, fullscreen: boolean) => {
+     const root = document.documentElement as HTMLElement | null
+     if (root === null) return
+diff --git a/apps/desktop/src/preload-app.ts b/apps/desktop/src/preload-app.ts
+index a8f51aa..f590b8b 100644
+--- a/apps/desktop/src/preload-app.ts
++++ b/apps/desktop/src/preload-app.ts
+@@ -2,11 +2,10 @@
+ 
+ import type { DesktopShortcutInput, ShortcutConfigSnapshot, ShortcutSaveResult } from '@deepseek-ai/dsh-client-shortcuts/protocol'
+ import { contextBridge, ipcRenderer, webUtils } from 'electron'
+-import { DESKTOP_IPC, SCHEME, type DshDesktopProductApi, type DesktopUpdatePresentation, type DesktopWindowControlsApi } from './ipc.ts'
++import { DESKTOP_IPC, SCHEME, type DshDesktopProductApi, type DesktopUpdatePresentation } from './ipc.ts'
+ import { PLATFORM_IPC } from './platform-ipc.ts'
+ import { markDocumentPlatform, syncWindowFullscreen } from './preload-platform.ts'
+ import { syncNativeTheme } from './preload-theme.ts'
+-import { syncLinuxCaption } from './preload-linux.ts'
+ import { syncWindowsAppearance } from './preload-windows.ts'
+ import { installMandatoryUpdateOverlay } from './preload-mandatory-overlay.ts'
+ import { createDesktopBrowserBridge } from './preload-browser.ts'
+@@ -56,29 +55,6 @@ function createProductApi(): DshDesktopProductApi {
+         return () => { ipcRenderer.off(DESKTOP_IPC.updatesPresentation, handle) }
+       },
+     },
+-    // Only Linux draws its window controls in the document; the shell always sends the state
+-    // after each load, so the cached value covers the first render before any transition.
+-    ...process.platform === 'linux' ? { windowControls: createLinuxWindowControls() } : {},
+-  }
+-}
+-
+-/** Create the Linux caption's window-control bridge over the private shell IPC. */
+-function createLinuxWindowControls(): DesktopWindowControlsApi {
+-  let maximized = false
+-  const listeners = new Set<(maximized: boolean) => void>()
+-  ipcRenderer.on(DESKTOP_IPC.windowMaximized, (_event, state: boolean) => {
+-    maximized = state
+-    for (const listener of listeners) listener(state)
+-  })
+-  return {
+-    minimize: () => { void ipcRenderer.invoke(DESKTOP_IPC.windowControl, 'minimize') },
+-    toggleMaximize: () => { void ipcRenderer.invoke(DESKTOP_IPC.windowControl, 'toggle-maximize') },
+-    close: () => { void ipcRenderer.invoke(DESKTOP_IPC.windowControl, 'close') },
+-    maximized: () => Promise.resolve(maximized),
+-    onMaximizedChanged(listener) {
+-      listeners.add(listener)
+-      return () => { listeners.delete(listener) }
+-    },
+   }
+ }
+ 
+@@ -96,7 +72,6 @@ if (location.protocol === `${SCHEME}:` && location.hostname === 'app') {
+     else body.setAttribute('tabindex', previous)
+   })
+   syncWindowsAppearance()
+-  syncLinuxCaption()
+   if (process.platform === 'win32') installMandatoryUpdateOverlay()
+   contextBridge.exposeInMainWorld('__DSH_DIRECTORY_PICKER__', {
+     pick: () => ipcRenderer.invoke(DESKTOP_IPC.directoryPick) as Promise<string | null>,
+diff --git a/packages/client/ui-layout/src/client/AppFrame.tsx b/packages/client/ui-layout/src/client/AppFrame.tsx
+index 81c48f5..841f9f7 100644
+--- a/packages/client/ui-layout/src/client/AppFrame.tsx
++++ b/packages/client/ui-layout/src/client/AppFrame.tsx
+@@ -21,7 +21,6 @@ import type {
+ } from '@deepseek-ai/dsh-client-ui-slots'
+ import { CENTER_MIN, clampWidth, computeColumns, RIGHTBAR_DEFAULT_RATIO, RIGHTBAR_MAX_RATIO, RIGHTBAR_MIN, SIDEBAR_AUTO_COLLAPSE, SIDEBAR_COLLAPSED, SIDEBAR_DEFAULT } from './columns.ts'
+ import { DocumentTitle } from './DocumentTitle.tsx'
+-import { LinuxCaption, linuxCaptionMounted } from './LinuxCaption.tsx'
+ import type { createLayoutStore } from './stores.ts'
+ import css from './AppFrame.module.css'
+ 
+@@ -290,8 +289,6 @@ export function AppFrame({
+       <div className={css.overlayLayer} data-shell-overlay>
+         {overlays}
+       </div>
+-      {/* The Linux shell draws its own caption controls in the reserved row; see LinuxCaption. */}
+-      {linuxCaptionMounted() && <LinuxCaption t={t} />}
+       {leadingMounted && (
+         <div className={css.leadingSeat} data-shell-leading>
+           {leading}
+diff --git a/packages/client/ui-layout/src/client/AppFrame.module.css b/packages/client/ui-layout/src/client/AppFrame.module.css
+index d875519..56494a9 100644
+--- a/packages/client/ui-layout/src/client/AppFrame.module.css
++++ b/packages/client/ui-layout/src/client/AppFrame.module.css
+@@ -100,12 +100,6 @@
+   --dsh-frame-chrome-top: var(--dsh-windows-titlebar-height);
+ }
+ 
+-/* The Linux caption is drawn in the document beneath overlay paint, so modal masks darken
+-   the caption row like any other content instead of keeping it clear for native controls. */
+-:global(html[data-linux-window-controls]) {
+-  --dsh-frame-chrome-top: 0px;
+-}
+-
+ /* Portalled overlays share a viewport inset without adding space to entry pages. */
+ :global(html[data-platform='darwin']),
+ :global(html[data-windows-titlebar]) {
+diff --git a/packages/client/locale/src/locales/zh.ts b/packages/client/locale/src/locales/zh.ts
+index f6e1e2b..11ff789 100644
+--- a/packages/client/locale/src/locales/zh.ts
++++ b/packages/client/locale/src/locales/zh.ts
+@@ -3,9 +3,6 @@ export const zh = {
+   'ok': '确定',
+   'cancel': '取消',
+   'close': '关闭',
+-  'window.minimize': '最小化',
+-  'window.maximize': '最大化',
+-  'window.restore': '还原',
+   'copy': '复制',
+   'copied': '复制成功',
+   'codeBlock.title': '代码块',
+diff --git a/packages/client/locale/src/locales/en.ts b/packages/client/locale/src/locales/en.ts
+index 477b53c..b649bbc 100644
+--- a/packages/client/locale/src/locales/en.ts
++++ b/packages/client/locale/src/locales/en.ts
+@@ -5,9 +5,6 @@ export const en = {
+   'ok': 'OK',
+   'cancel': 'Cancel',
+   'close': 'Close',
+-  'window.minimize': 'Minimize',
+-  'window.maximize': 'Maximize',
+-  'window.restore': 'Restore',
+   'copy': 'Copy',
+   'copied': 'Copied',
+   'codeBlock.title': 'Code block',
+diff --git a/apps/desktop/src/preload-linux.ts b/apps/desktop/src/preload-linux.ts
+deleted file mode 100644
+index a4b3504..0000000
+--- a/apps/desktop/src/preload-linux.ts
++++ /dev/null
+@@ -1,22 +0,0 @@
+-/** Linux self-drawn caption markers consumed by the shared Web layout. */
+-
+-import { WINDOWS_TITLEBAR_HEIGHT } from './windows-layout.ts'
+-
+-/**
+- * Mark the document root so the shared Web client reserves the caption row and renders
+- * its own window controls. Reuses the Windows caption layout marker (same geometry and
+- * drag clearance) plus a Linux-only marker selecting the self-drawn control buttons.
+- * @returns Nothing; the markers land immediately or at DOMContentLoaded.
+- */
+-export function syncLinuxCaption(): void {
+-  if (process.platform !== 'linux') return
+-  const mark = (): void => {
+-    const root = document.documentElement
+-    root.dataset.windowsTitlebar = ''
+-    root.dataset.linuxWindowControls = ''
+-    root.style.setProperty('--dsh-windows-titlebar-height', `${WINDOWS_TITLEBAR_HEIGHT}px`)
+-  }
+-  // The root can be absent before the HTML parser creates it.
+-  if ((document.documentElement as HTMLElement | null) !== null) mark()
+-  else window.addEventListener('DOMContentLoaded', mark)
+-}
+diff --git a/packages/client/ui-layout/src/client/LinuxCaption.tsx b/packages/client/ui-layout/src/client/LinuxCaption.tsx
+deleted file mode 100644
+index e03a86b..0000000
+--- a/packages/client/ui-layout/src/client/LinuxCaption.tsx
++++ /dev/null
+@@ -1,77 +0,0 @@
+-/**
+- * Linux self-drawn window caption. The Electron shell's preload marks the document root
+- * (`data-linux-window-controls`) when it owns a frameless window; this component renders
+- * the drag row with the minimize, maximize/restore, and close buttons, following the
+- * caption geometry the Windows layout already publishes on the root.
+- *
+- * Web and other desktop platforms never set the marker, so nothing renders there.
+- */
+-import { useEffect, useState } from 'react'
+-import type { Translate } from '@deepseek-ai/dsh-client-ui-slots'
+-import type { CommonKey } from '@deepseek-ai/dsh-client-locale/client'
+-import css from './LinuxCaption.module.css'
+-
+-/** Linux window-control bridge exposed by the desktop preload. */
+-interface WindowControls {
+-  minimize(): void
+-  toggleMaximize(): void
+-  close(): void
+-  maximized(): Promise<boolean>
+-  onMaximizedChanged(listener: (maximized: boolean) => void): () => void
+-}
+-
+-/** Props for the Linux self-drawn caption. */
+-export type LinuxCaptionProps = {
+-  /** Common-namespace translations for the button labels. */
+-  t: Translate<CommonKey>
+-}
+-
+-/**
+- * Whether the document runs in a Linux desktop shell that owns self-drawn window controls.
+- * @returns True when the preload published the Linux caption marker.
+- */
+-export function linuxCaptionMounted(): boolean {
+-  return document.documentElement.hasAttribute('data-linux-window-controls')
+-}
+-
+-/** The self-drawn caption row; renders nothing outside a Linux desktop shell. */
+-export function LinuxCaption({ t }: LinuxCaptionProps) {
+-  const [maximized, setMaximized] = useState(false)
+-  const [controls] = useState<WindowControls | undefined>(() => (window as {
+-    dshDesktop?: { windowControls?: WindowControls }
+-  }).dshDesktop?.windowControls)
+-
+-  useEffect(() => {
+-    if (controls === undefined) return
+-    void controls.maximized().then(setMaximized)
+-    return controls.onMaximizedChanged(setMaximized)
+-  }, [controls])
+-
+-  if (controls === undefined) return null
+-  const toggle = (event: React.MouseEvent<HTMLDivElement>): void => {
+-    // A double-click on the drag row (never on a button) toggles maximization, like a native titlebar.
+-    if (!(event.target instanceof Element) || event.target.closest('button') === null) controls.toggleMaximize()
+-  }
+-
+-  return (
+-    <div className={css.caption} onDoubleClick={toggle}>
+-      <div className={css.controls}>
+-        <button type="button" className={css.button} aria-label={t('window.minimize')} title={t('window.minimize')}
+-          onClick={() => { controls.minimize() }}>
+-          <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M1 8.5h10" /></svg>
+-        </button>
+-        <button type="button" className={css.button} aria-label={maximized ? t('window.restore') : t('window.maximize')}
+-          title={maximized ? t('window.restore') : t('window.maximize')}
+-          onClick={() => { controls.toggleMaximize() }}>
+-          {maximized
+-            ? <svg viewBox="0 0 12 12" className={css.icon} aria-hidden="true"><path d="M3.5 3.5V1.5h7v7h-2M1.5 3.5h7v7h-7z" /></svg>
+-            : <svg viewBox="0 0 12 12" className={css.icon} aria-hidden="true"><rect x="1.5" y="1.5" width="9" height="9" /></svg>}
+-        </button>
+-        <button type="button" className={`${css.button} ${css.close}`} aria-label={t('close')} title={t('close')}
+-          onClick={() => { controls.close() }}>
+-          <svg viewBox="0 0 12 12" aria-hidden="true"><path d="m2 2 8 8M10 2 2 10" /></svg>
+-        </button>
+-      </div>
+-    </div>
+-  )
+-}
+diff --git a/packages/client/ui-layout/src/client/LinuxCaption.module.css b/packages/client/ui-layout/src/client/LinuxCaption.module.css
+deleted file mode 100644
+index 690becc..0000000
+--- a/packages/client/ui-layout/src/client/LinuxCaption.module.css
++++ /dev/null
+@@ -1,68 +0,0 @@
+-/* Linux self-drawn caption: a drag row above the reserved caption clearance
+-   with a right-aligned Windows-style control group. */
+-
+-.caption {
+-  position: absolute;
+-  inset: 0 0 auto;
+-  height: var(--dsh-windows-titlebar-height);
+-  z-index: 4;
+-  display: flex;
+-  align-items: stretch;
+-  justify-content: flex-end;
+-  -webkit-app-region: drag;
+-  user-select: none;
+-}
+-
+-/* Fullscreen keeps the clearance like the Windows overlay but hides the controls. */
+-:global(html[data-fullscreen]) .caption {
+-  display: none;
+-}
+-
+-.controls {
+-  display: flex;
+-  -webkit-app-region: no-drag;
+-}
+-
+-.button {
+-  width: 45px;
+-  display: grid;
+-  place-items: center;
+-  padding: 0;
+-  border: 0;
+-  border-radius: 0;
+-  background: transparent;
+-  color: var(--dsw-alias-label-primary);
+-  cursor: pointer;
+-  transition: color 0.16s ease, background-color 0.16s ease;
+-}
+-
+-.button:disabled {
+-  cursor: default;
+-}
+-
+-.button:hover {
+-  background: var(--dsw-alias-interactive-bg-hover-solid);
+-}
+-
+-.button:active {
+-  background: var(--dsw-alias-interactive-bg-hover-solid);
+-}
+-
+-.button:focus-visible {
+-  outline: 1px solid var(--dsw-alias-border-l4);
+-  outline-offset: -1px;
+-}
+-
+-.close:hover,
+-.close:active {
+-  color: #fff;
+-  background: var(--dsw-static-red-600);
+-}
+-
+-.button svg {
+-  width: 11px;
+-  height: 11px;
+-  fill: none;
+-  stroke: currentColor;
+-  stroke-width: 1.2;
+-}
+diff --git a/packages/client/ui-layout/tests/linux-caption.client.spec.tsx b/packages/client/ui-layout/tests/linux-caption.client.spec.tsx
+deleted file mode 100644
+index f8f9794..0000000
+--- a/packages/client/ui-layout/tests/linux-caption.client.spec.tsx
++++ /dev/null
+@@ -1,103 +0,0 @@
+-// @vitest-environment jsdom
+-import { afterEach, describe, expect, it } from 'vitest'
+-import { act, cleanup, render } from '@testing-library/react'
+-import { LinuxCaption, linuxCaptionMounted } from '../src/client/LinuxCaption.tsx'
+-
+-interface ControlsFixture {
+-  readonly calls: string[]
+-  readonly controls: {
+-    minimize(): void
+-    toggleMaximize(): void
+-    close(): void
+-    maximized(): Promise<boolean>
+-    onMaximizedChanged(listener: (maximized: boolean) => void): () => void
+-  }
+-}
+-
+-function captionFixture(initialMaximized = false): ControlsFixture {
+-  const calls: string[] = []
+-  let maximized = initialMaximized
+-  const listeners = new Set<(maximized: boolean) => void>()
+-  return {
+-    calls,
+-    controls: {
+-      minimize: () => { calls.push('minimize') },
+-      toggleMaximize: () => { calls.push('toggle-maximize') },
+-      close: () => { calls.push('close') },
+-      maximized: () => Promise.resolve(maximized),
+-      onMaximizedChanged: (listener) => {
+-        listeners.add(listener)
+-        return () => { listeners.delete(listener) }
+-      },
+-    },
+-  }
+-}
+-
+-afterEach(() => {
+-  cleanup()
+-  delete document.documentElement.dataset.linuxWindowControls
+-})
+-
+-describe('LinuxCaption', () => {
+-  it('renders nothing without the shell marker or controls', () => {
+-    expect(linuxCaptionMounted()).toBe(false)
+-    const plain = render(<LinuxCaption t={(key) => key} />)
+-    expect(plain.container.firstElementChild).toBeNull()
+-    document.documentElement.dataset.linuxWindowControls = ''
+-    const marked = render(<LinuxCaption t={(key) => key} />)
+-    // The marker alone does not produce controls; only the desktop preload supplies them.
+-    expect(marked.container.firstElementChild).toBeNull()
+-  })
+-
+-  it('routes the three buttons to the shell window controls', async () => {
+-    document.documentElement.dataset.linuxWindowControls = ''
+-    const { calls, controls } = captionFixture()
+-    ;(window as { dshDesktop?: unknown }).dshDesktop = { windowControls: controls }
+-    const mounted = render(<LinuxCaption t={(key) => key} />)
+-    const buttons = mounted.getAllByRole('button')
+-    expect(buttons.map(button => button.getAttribute('aria-label'))).toEqual(['window.minimize', 'window.maximize', 'close'])
+-    buttons[0]!.click()
+-    buttons[1]!.click()
+-    buttons[2]!.click()
+-    expect(calls).toEqual(['minimize', 'toggle-maximize', 'close'])
+-    // A button double-click never reaches the row's toggle; only the surrounding drag row does.
+-    buttons[1]!.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, detail: 2 }))
+-    expect(calls).toEqual(['minimize', 'toggle-maximize', 'close'])
+-    mounted.unmount()
+-    delete (window as { dshDesktop?: unknown }).dshDesktop
+-  })
+-
+-  it('subscribes to maximized transitions from the shell', async () => {
+-    document.documentElement.dataset.linuxWindowControls = ''
+-    let notify: ((maximized: boolean) => void) | undefined
+-    const { controls } = captionFixture(true)
+-    ;(window as { dshDesktop?: unknown }).dshDesktop = { windowControls: {
+-      ...controls,
+-      onMaximizedChanged: (listener: (maximized: boolean) => void) => { notify = listener; return () => { notify = undefined } },
+-    } }
+-    const mounted = render(<LinuxCaption t={(key) => key} />)
+-    await act(async () => { await Promise.resolve() })
+-    expect(markedButtons(mounted.container)[1]!.getAttribute('aria-label')).toBe('window.restore')
+-    act(() => { notify?.(false) })
+-    expect(markedButtons(mounted.container)[1]!.getAttribute('aria-label')).toBe('window.maximize')
+-    act(() => { notify?.(true) })
+-    expect(markedButtons(mounted.container)[1]!.getAttribute('aria-label')).toBe('window.restore')
+-    mounted.unmount()
+-    delete (window as { dshDesktop?: unknown }).dshDesktop
+-  })
+-
+-  it('double-clicks on the drag row toggle maximization, button double-clicks do not', () => {
+-    document.documentElement.dataset.linuxWindowControls = ''
+-    const { calls, controls } = captionFixture()
+-    ;(window as { dshDesktop?: unknown }).dshDesktop = { windowControls: controls }
+-    const mounted = render(<LinuxCaption t={(key) => key} />)
+-    mounted.container.firstElementChild!.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, detail: 2 }))
+-    expect(calls).toEqual(['toggle-maximize'])
+-    mounted.unmount()
+-    delete (window as { dshDesktop?: unknown }).dshDesktop
+-  })
+-})
+-
+-function markedButtons(container: HTMLElement): HTMLButtonElement[] {
+-  return [...container.querySelectorAll('button')]
+-}

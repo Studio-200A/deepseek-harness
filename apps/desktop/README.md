@@ -311,6 +311,8 @@ The command reads `apps/desktop/env.linux` ([template](env.linux.example)), whic
 
 After one complete run, `pnpm --dir apps/desktop run package:linux:x64:quick` rebuilds only the changed sources: it reruns the incremental workspace build, overlays the rebuilt package outputs onto the prepared `dsh` tree, rewrites the runtime descriptor, and repacks the AppImage without re-preparing runtimes or repacking tarballs. It is an iteration tool for a prepared target — the complete command stays authoritative for verification. Pass `--smoke` to also run the packaged runtime smoke.
 
+The self-drawn Linux window caption is a local fork feature. `git apply apps/desktop/linux-remove-custom-window-decoration.patch` from the repository root removes it (native window decorations return, together with the Linux close-to-quit behavior); `git apply -R` on the same file restores it. Repack with the quick command after either direction. Removing the caption also restores the background-hide close path, which no tray icon can recover on Linux.
+
 ### Windows installer interface
 
 The Windows installer uses native NSIS pages with light and dark palettes, system shadows, an editable installation directory, and a finish page whose launch checkbox is selected by default. Installation is restricted to the current user. Clicking Install or pressing Enter validates the current path; new destinations must be empty, and nonempty destinations must be registered installations. Running executables at the affected installation path produce a native prompt and remain running; same-named applications in other directories do not block installation. Silent updates wait up to ten seconds for the affected application to exit, then stop with exit code 2 if it is still running.
