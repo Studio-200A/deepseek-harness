@@ -41,7 +41,11 @@ const STORE_ROOT = join(BUILD_ROOT, 'store')
 const RUNTIME_ROOT = BUILD_PATHS.runtime
 const PNPM_BUILD_STATE = BUILD_PATHS.dshPnpm
 const PACKAGE_SET_ROOT = BUILD_PATHS.packageSet
-const NODE = join(BUILD_PATHS.electron, process.platform === 'win32' ? 'electron.exe' : 'Electron.app/Contents/MacOS/Electron')
+// Linux materializes and smokes the runtime on the bundled Node.js: Electron's PartitionAlloc malloc
+// shim corrupts prebuilt native modules such as sharp there, so prepare steps never run under it.
+const NODE = process.platform === 'win32' ? join(BUILD_PATHS.electron, 'electron.exe')
+  : process.platform === 'darwin' ? join(BUILD_PATHS.electron, 'Electron.app/Contents/MacOS/Electron')
+    : join(RUNTIME_ROOT, 'primary-runtime', 'dependencies', 'node', 'bin', 'node')
 const PNPM = join(RUNTIME_ROOT, 'pnpm', 'bin', 'pnpm.mjs')
 
 function manifestVersion(path: string, subject: string): string {

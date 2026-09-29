@@ -29,7 +29,7 @@ function preparePnpm(): string {
 async function main(): Promise<void> {
   const { values } = parseArgs({ options: { 'defer-primary-runtime-smoke': { type: 'boolean', default: false } } })
   const target = resolveDesktopBuildTarget()
-  const platform = target.startsWith('mac-') ? 'darwin' : 'win32'
+  const platform = target.startsWith('mac-') ? 'darwin' : target.startsWith('linux-') ? 'linux' : 'win32'
   const arch = target.endsWith('arm64') ? 'arm64' : 'x64'
   const require = createRequire(import.meta.url)
   const { version } = require('electron/package.json') as { version: string }
@@ -37,22 +37,29 @@ async function main(): Promise<void> {
     () => downloadArtifact({ version, platform, arch, artifactName: 'electron', cacheRoot: BUILD_PATHS.downloads }))
   rmSync(BUILD_PATHS.electron, { recursive: true, force: true })
   await packagingStep(process.env.DSH_DESKTOP_PACKAGING_RUN_DIR, 'extract:electron', () => extractZip(archive, { dir: BUILD_PATHS.electron }))
-  const executable = join(BUILD_PATHS.electron, platform === 'win32' ? 'electron.exe' : 'Electron.app/Contents/MacOS/Electron')
-  const nodeVersion = execFileSync(executable, ['-p', 'process.versions.node'], {
-    encoding: 'utf8', env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
-  }).trim()
+  const executable = join(BUILD_PATHS.electron, platform === 'win32' ? 'electron.exe' : platform === 'darwin' ? 'Electron.app/Contents/MacOS/Electron' : 'electron')
+  // The Linux archive does not carry a bundle directory, and zip extraction need not preserve the executable bit.
+  if (platform === 'linux') chmodSync(executable, 0o755)
   rmSync(RUNTIME_ROOT, { recursive: true, force: true })
   mkdirSync(RUNTIME_ROOT, { recursive: true })
   const pnpmVersion = preparePnpm()
   cpSync(join(import.meta.dirname, 'node-bin'), join(RUNTIME_ROOT, 'bin'), { recursive: true })
   chmodSync(join(RUNTIME_ROOT, 'bin', 'node'), 0o755)
+  await packagingStep(process.env.DSH_DESKTOP_PACKAGING_RUN_DIR, 'prepare:primary-runtime',
+    () => preparePrimaryRuntime({ deferSmoke: values['defer-primary-runtime-smoke'] }))
+  // Linux runs the Host and package scripts on the bundled Node.js, because Electron's PartitionAlloc
+  // malloc shim corrupts prebuilt native modules such as sharp there; the recorded node version must
+  // name the interpreter the packaged application actually executes.
+  const runtimeNode = platform === 'linux'
+    ? join(RUNTIME_ROOT, 'primary-runtime', 'dependencies', 'node', 'bin', 'node') : executable
+  const nodeVersion = execFileSync(runtimeNode, ['-p', 'process.versions.node'], {
+    encoding: 'utf8', env: { ...process.env, ...(platform === 'linux' ? {} : { ELECTRON_RUN_AS_NODE: '1' }) },
+  }).trim()
   writeFileSync(join(RUNTIME_ROOT, 'versions.json'), `${JSON.stringify({
     schemaVersion: 1,
     node: nodeVersion,
     pnpm: pnpmVersion,
   }, undefined, 2)}\n`)
-  await packagingStep(process.env.DSH_DESKTOP_PACKAGING_RUN_DIR, 'prepare:primary-runtime',
-    () => preparePrimaryRuntime({ deferSmoke: values['defer-primary-runtime-smoke'] }))
 }
 
 await main()

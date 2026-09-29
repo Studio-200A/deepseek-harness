@@ -146,15 +146,30 @@ interface RuntimeResources {
   readonly dsh: string
 }
 
+/**
+ * Path of the Node.js interpreter the Host and its package scripts run on Linux.
+ * Electron's binary exports a PartitionAlloc malloc shim that corrupts prebuilt native modules such
+ * as sharp on Linux, so Linux runs the interpreter bundled with the primary runtime instead of
+ * Electron's Node mode; macOS and Windows keep Electron RunAsNode.
+ * @param primaryRuntime - Bundled primary-runtime directory.
+ * @returns Bundled Node.js executable path.
+ */
+function bundledNodeExecutable(primaryRuntime: string): string {
+  return join(primaryRuntime, 'dependencies', 'node', 'bin', 'node')
+}
+
 function runtimeResources(): RuntimeResources {
   const development = !app.isPackaged
-  const node = process.execPath
+  const primaryRuntime = development ? developmentPrimaryRuntime() : join(process.resourcesPath, 'runtime', 'primary-runtime')
+  const node = process.platform === 'linux' ? bundledNodeExecutable(primaryRuntime) : process.execPath
   const nodeBin = development ? join(app.getAppPath(), 'scripts', 'node-bin') : join(process.resourcesPath, 'runtime', 'bin')
   const pnpm = (development ? process.env.DSH_DESKTOP_PNPM_ENTRY : undefined)
     ?? (development ? join(app.getAppPath(), 'node_modules', 'pnpm', 'bin', 'pnpm.mjs')
       : join(process.resourcesPath, 'runtime', 'pnpm', 'bin', 'pnpm.mjs'))
   const dsh = (development ? process.env.DSH_DESKTOP_DSH_DIR : undefined)
-    ?? (development ? join(app.getAppPath(), '.desktop-build', 'development', 'project') : join(app.getAppPath(), 'dsh'))
+    ?? (development ? join(app.getAppPath(), '.desktop-build', 'development', 'project')
+      // Linux keeps dsh outside app.asar because its Host runs on the bundled Node.js without ASAR support.
+      : process.platform === 'linux' ? join(process.resourcesPath, 'dsh') : join(app.getAppPath(), 'dsh'))
   return { node, nodeBin, pnpm, dsh }
 }
 

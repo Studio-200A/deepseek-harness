@@ -30,7 +30,9 @@ function checkPnpm() {
   writeFileSync(join(scratch, 'check.cjs'), `
 const assert = require('node:assert/strict')
 assert.equal(process.execPath, ${JSON.stringify(process.execPath)})
-assert.ok(process.versions.electron)
+${process.versions.electron === undefined
+  ? "assert.equal(process.versions.electron, undefined, 'package scripts must not run under Electron on Linux')"
+  : 'assert.ok(process.versions.electron)'}
 assert.ok(process.execArgv.includes('--expose-internals'))
 assert.equal(typeof require('internal/modules/esm/loader').getOrInitializeCascadedLoader, 'function')
 console.log('desktop-node-script-ok')
