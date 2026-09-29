@@ -2,10 +2,11 @@
 
 import type { DesktopShortcutInput, ShortcutConfigSnapshot, ShortcutSaveResult } from '@deepseek-ai/dsh-client-shortcuts/protocol'
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
-import { DESKTOP_IPC, SCHEME, type DshDesktopProductApi, type DesktopUpdatePresentation } from './ipc.ts'
+import { DESKTOP_IPC, SCHEME, type DshDesktopProductApi, type DesktopUpdatePresentation, type DesktopWindowControlsApi } from './ipc.ts'
 import { PLATFORM_IPC } from './platform-ipc.ts'
 import { markDocumentPlatform, syncWindowFullscreen } from './preload-platform.ts'
 import { syncNativeTheme } from './preload-theme.ts'
+import { syncLinuxCaption } from './preload-linux.ts'
 import { syncWindowsAppearance } from './preload-windows.ts'
 import { installMandatoryUpdateOverlay } from './preload-mandatory-overlay.ts'
 import { createDesktopBrowserBridge } from './preload-browser.ts'
@@ -55,6 +56,29 @@ function createProductApi(): DshDesktopProductApi {
         return () => { ipcRenderer.off(DESKTOP_IPC.updatesPresentation, handle) }
       },
     },
+    // Only Linux draws its window controls in the document; the shell always sends the state
+    // after each load, so the cached value covers the first render before any transition.
+    ...process.platform === 'linux' ? { windowControls: createLinuxWindowControls() } : {},
+  }
+}
+
+/** Create the Linux caption's window-control bridge over the private shell IPC. */
+function createLinuxWindowControls(): DesktopWindowControlsApi {
+  let maximized = false
+  const listeners = new Set<(maximized: boolean) => void>()
+  ipcRenderer.on(DESKTOP_IPC.windowMaximized, (_event, state: boolean) => {
+    maximized = state
+    for (const listener of listeners) listener(state)
+  })
+  return {
+    minimize: () => { void ipcRenderer.invoke(DESKTOP_IPC.windowControl, 'minimize') },
+    toggleMaximize: () => { void ipcRenderer.invoke(DESKTOP_IPC.windowControl, 'toggle-maximize') },
+    close: () => { void ipcRenderer.invoke(DESKTOP_IPC.windowControl, 'close') },
+    maximized: () => Promise.resolve(maximized),
+    onMaximizedChanged(listener) {
+      listeners.add(listener)
+      return () => { listeners.delete(listener) }
+    },
   }
 }
 
@@ -72,6 +96,7 @@ if (location.protocol === `${SCHEME}:` && location.hostname === 'app') {
     else body.setAttribute('tabindex', previous)
   })
   syncWindowsAppearance()
+  syncLinuxCaption()
   if (process.platform === 'win32') installMandatoryUpdateOverlay()
   contextBridge.exposeInMainWorld('__DSH_DIRECTORY_PICKER__', {
     pick: () => ipcRenderer.invoke(DESKTOP_IPC.directoryPick) as Promise<string | null>,

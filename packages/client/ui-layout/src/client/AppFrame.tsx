@@ -21,6 +21,7 @@ import type {
 } from '@deepseek-ai/dsh-client-ui-slots'
 import { CENTER_MIN, clampWidth, computeColumns, RIGHTBAR_DEFAULT_RATIO, RIGHTBAR_MAX_RATIO, RIGHTBAR_MIN, SIDEBAR_AUTO_COLLAPSE, SIDEBAR_COLLAPSED, SIDEBAR_DEFAULT } from './columns.ts'
 import { DocumentTitle } from './DocumentTitle.tsx'
+import { LinuxCaption, linuxCaptionMounted } from './LinuxCaption.tsx'
 import type { createLayoutStore } from './stores.ts'
 import css from './AppFrame.module.css'
 
@@ -289,6 +290,8 @@ export function AppFrame({
       <div className={css.overlayLayer} data-shell-overlay>
         {overlays}
       </div>
+      {/* The Linux shell draws its own caption controls in the reserved row; see LinuxCaption. */}
+      {linuxCaptionMounted() && <LinuxCaption t={t} />}
       {leadingMounted && (
         <div className={css.leadingSeat} data-shell-leading>
           {leading}

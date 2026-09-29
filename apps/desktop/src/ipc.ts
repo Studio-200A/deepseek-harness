@@ -29,6 +29,8 @@ export const DESKTOP_IPC = {
   updatesPresentation: 'dsh-desktop:updates-presentation',
   nativeThemeSet: 'dsh-desktop:native-theme-set',
   windowFullscreen: 'dsh-desktop:window-fullscreen',
+  windowControl: 'dsh-desktop:window-control',
+  windowMaximized: 'dsh-desktop:window-maximized',
   windowsAppearance: 'dsh-desktop:windows-appearance',
   windowsMenu: 'dsh-desktop:windows-menu',
 } as const
@@ -68,12 +70,28 @@ export interface DesktopUpdatePresentation {
   readonly failure?: DesktopUpdateFailureKind
 }
 
+/** Linux self-drawn caption operations; other platforms keep native or overlay window controls. */
+export interface DesktopWindowControlsApi {
+  /** Minimize the owning window. */
+  minimize(): void
+  /** Maximize the owning window, or restore it when already maximized. */
+  toggleMaximize(): void
+  /** Close the owning window through the shell's ordinary close path. */
+  close(): void
+  /** Whether the owning window is currently maximized. */
+  maximized(): Promise<boolean>
+  /** Subscribe to maximized transitions of the owning window. */
+  onMaximizedChanged(listener: (maximized: boolean) => void): () => void
+}
+
 /** Product documents cannot supply update versions, package URLs, or installation authorization. */
 export interface DshDesktopProductApi {
   readonly protocolVersion: 1
   readonly browser: DesktopBrowserBridge
   readonly keyboard: DesktopKeyboardApi
   readonly shortcuts: DesktopShortcutsApi
+  /** Present only when the shell draws window controls itself (Linux). */
+  readonly windowControls?: DesktopWindowControlsApi
   /**
    * Local machine description for the feedback questionnaire.
    * @returns `name=value` fields separated by `; `, with no hostname, user name, or serial number.

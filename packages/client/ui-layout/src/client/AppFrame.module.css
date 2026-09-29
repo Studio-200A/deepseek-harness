@@ -100,6 +100,12 @@
   --dsh-frame-chrome-top: var(--dsh-windows-titlebar-height);
 }
 
+/* The Linux caption is drawn in the document beneath overlay paint, so modal masks darken
+   the caption row like any other content instead of keeping it clear for native controls. */
+:global(html[data-linux-window-controls]) {
+  --dsh-frame-chrome-top: 0px;
+}
+
 /* Portalled overlays share a viewport inset without adding space to entry pages. */
 :global(html[data-platform='darwin']),
 :global(html[data-windows-titlebar]) {

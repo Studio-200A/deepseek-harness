@@ -228,6 +228,8 @@ function createWindow(preload: string, show = false, primary = false): BrowserWi
       titleBarOverlay: { height: WINDOWS_TITLEBAR_HEIGHT, color: chromeFallbackFill(),
         symbolColor: nativeTheme.shouldUseDarkColors ? '#f9fafb' : '#0f1115' },
     } : {}),
+    // Linux draws its caption and controls in the application document; the frameless window keeps native resizing.
+    ...(process.platform === 'linux' && primary ? { titleBarStyle: 'hidden' as const } : {}),
     // hiddenInset places traffic lights inside the sidebar; sidebar vibrancy
     // needs a transparent window background to show through the page.
     ...(process.platform === 'darwin' ? {
@@ -253,8 +255,9 @@ function createWindow(preload: string, show = false, primary = false): BrowserWi
     if (['http:', 'https:'].includes(new URL(url).protocol)) void shell.openExternal(url)
     return { action: 'deny' }
   })
-  if (process.platform === 'darwin' || process.platform === 'win32') {
-    // Fullscreen hides native window controls; overlays drop their caption clearance.
+  if (process.platform !== 'darwin') {
+    // Fullscreen hides window controls on every non-macOS platform: Windows drops its overlay, Linux
+    // its self-drawn caption, so CSS on both needs the transition and the post-load state.
     const sendFullscreen = (): void => {
       if (!window.isDestroyed()) window.webContents.send(DESKTOP_IPC.windowFullscreen, window.isFullScreen())
     }
@@ -762,6 +765,18 @@ async function main(): Promise<void> {
     assertProductSender(event)
     return readDeviceInfo()
   })
+  ipcMain.handle(DESKTOP_IPC.windowControl, (event, action: unknown) => {
+    assertProductSender(event)
+    const window = mainWindow
+    if (window === undefined || window.isDestroyed()) throw new Error('dsh desktop: no window owns this window control')
+    // Linux self-drawn caption commands; every action routes through the ordinary window path.
+    if (action === 'minimize') window.minimize()
+    else if (action === 'toggle-maximize') {
+      if (window.isMaximized()) window.unmaximize()
+      else window.maximize()
+    } else if (action === 'close') window.close()
+    else throw new Error(`dsh desktop: unknown window control ${String(action)}`)
+  })
   ipcMain.handle(DESKTOP_IPC.onboardingApiKey, async (event) => {
     assertProductSender(event)
     return (await readWelcomeState()).hasApiKey
@@ -1056,11 +1071,22 @@ async function main(): Promise<void> {
     browserGuests.bind(window, (guest, name) => shortcuts.attachGuest(window, guest, name))
     shortcuts.attach(window)
     window.on('focus', automaticCheck)
+    // The Linux self-drawn caption mirrors the fullscreen state feed: it needs the maximized
+    // state on every transition and after each load to select its maximize or restore icon.
+    const sendMaximized = (): void => {
+      if (!window.isDestroyed()) window.webContents.send(DESKTOP_IPC.windowMaximized, window.isMaximized())
+    }
+    window.on('maximize', sendMaximized)
+    window.on('unmaximize', sendMaximized)
+    window.webContents.on('did-finish-load', sendMaximized)
     // Closing hides: the page and the Host keep running, and the next show resumes the same document.
     window.on('close', (event) => {
       if (quitting || shellInstallerOwnsQuit || sessionEnding) return
       event.preventDefault()
       if (updateDialog.isOpen) { updateDialog.focus(); return }
+      // Linux has no tray or Dock icon to bring a hidden window back, so closing requests the
+      // ordinary confirmed quit instead of hiding into an unreachable background.
+      if (process.platform === 'linux') { app.quit(); return }
       const hide = (): void => {
         if (!quitting && !shellInstallerOwnsQuit && !sessionEnding && !window.isDestroyed()) hideMainWindow(window)
       }
